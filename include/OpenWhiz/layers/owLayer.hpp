@@ -167,7 +167,7 @@ public:
     }
     
     /** @brief Assigns an optimizer to this layer for parameter updates. */
-    void setOptimizer(owOptimizer* opt) { m_optimizer = opt; }
+    virtual void setOptimizer(owOptimizer* opt) { m_optimizer = opt; }
 
     /** @return The optimizer currently assigned to this layer. */
     owOptimizer* getOptimizer() { return m_optimizer; }
@@ -179,7 +179,7 @@ public:
     owActivation* getActivation() { return m_activation.get(); }
     
     /** @brief Sets the regularization type (None, L1, L2). */
-    void setRegularization(int type) { m_regType = static_cast<owRegularizationType>(type); }
+    virtual void setRegularization(int type) { m_regType = static_cast<owRegularizationType>(type); }
 
     /** @return The current regularization type. */
     int getRegularization() const { return static_cast<int>(m_regType); }
@@ -205,6 +205,33 @@ public:
         else m_activation = std::make_shared<owIdentityActivation>();
     }
 
+    /** @brief Prevents this layer from updating its parameters. */
+    void setFrozen(bool frozen) { m_isFrozen = frozen; }
+
+    /** @return True if the layer's learning is currently disabled. */
+    bool isFrozen() const { return m_isFrozen; }
+
+    /** @brief Enables or disables independent expert training for this layer. */
+    void setIndependentExpertMode(bool enable) { m_isIndependentExpertMode = enable; }
+
+    /** @return True if this layer is acting as an independent expert. */
+    bool isIndependentExpertMode() const { return m_isIndependentExpertMode; }
+
+    /** @brief Sets the weight of the local expertise gradient (0.0 to 1.0+). */
+    void setLocalExpertWeight(float weight) { m_localExpertWeight = weight; }
+
+    /** @return Current local expertise weight. */
+    float getLocalExpertWeight() const { return m_localExpertWeight; }
+
+    /** @brief Sets a local convergence threshold. If local error is below this, the layer can auto-freeze. */
+    void setConvergenceThreshold(float threshold) { m_convergenceThreshold = threshold; }
+    
+    /** @return Current convergence threshold. */
+    float getConvergenceThreshold() const { return m_convergenceThreshold; }
+
+    /** @brief Sets the target tensor pointer for independent supervised training of this layer/branch. */
+    virtual void setTarget(const owTensor<float, 2>* target) { m_localTarget = target; }
+
     /** @return Pointer to the raw parameter data (for global optimization). */
 	virtual float* getParamsPtr() = 0;
 
@@ -219,6 +246,11 @@ public:
 
 protected:
     std::string m_layerName = "Base Layer";
+    bool m_isIndependentExpertMode = false;
+    bool m_isFrozen = false; 
+    float m_convergenceThreshold = 0.0f;
+    const owTensor<float, 2>* m_localTarget = nullptr; 
+    float m_localExpertWeight = 1.0f;
     owOptimizer* m_optimizer = nullptr;
     std::shared_ptr<owActivation> m_activation = std::make_shared<owIdentityActivation>();
     owRegularizationType m_regType = L2;

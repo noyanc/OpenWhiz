@@ -41,10 +41,22 @@ public:
      * @brief Constructs an owConcatenateLayer with an optional initial set of branches.
      * @param branches A vector of shared pointers to the layers that will form the parallel branches.
      */
-    owConcatenateLayer(const std::vector<std::shared_ptr<owLayer>>& branches = {})
-        : m_branches(branches) {
+    owConcatenateLayer(const std::vector<std::shared_ptr<owLayer>>& branches = {}, bool useSharedInput = false)
+        : m_branches(branches), m_useSharedInput(useSharedInput) {
         m_layerName = "Concatenate Layer";
     }
+
+    /**
+     * @brief Returns the list of internal branches.
+     */
+    std::vector<std::shared_ptr<owLayer>>& getBranches() { return m_branches; }
+
+    /**
+     * @brief Sets whether all branches should receive the full input (Shared) 
+     * or a horizontal slice (Standard).
+     * @param shared True for shared input, false for sliced input.
+     */
+    void setUseSharedInput(bool shared) { m_useSharedInput = shared; }
 
     /**
      * @brief Adds a new parallel branch to the layer.
@@ -68,6 +80,9 @@ public:
      * @return The sum of the input sizes of all branches.
      */
     size_t getInputSize() const override {
+        if (m_useSharedInput) {
+            return m_branches.empty() ? 0 : m_branches[0]->getInputSize();
+        }
         size_t total = 0;
         for (const auto& b : m_branches) total += b->getInputSize();
         return total;
@@ -90,7 +105,7 @@ public:
     void setNeuronNum(size_t num) override { (void)num; }
 
     /**
-     * @brief Performs the forward pass by slicing the input and executing all branches.
+     * @brief Performs the forward pass.
      * @param input Input tensor of shape [BatchSize, TotalInputSize].
      * @return Concatenated output tensor of shape [BatchSize, TotalOutputSize].
      */
@@ -101,18 +116,21 @@ public:
 
         size_t currentInOffset = 0;
         for (auto& branch : m_branches) {
-            size_t inSize = branch->getInputSize();
-            
-            // Slice input for this branch
-            owTensor<float, 2> slicedInput(batch, inSize);
-            for (size_t i = 0; i < batch; ++i) {
-                for (size_t j = 0; j < inSize; ++j) {
-                    slicedInput(i, j) = input(i, currentInOffset + j);
+            if (m_useSharedInput) {
+                // Shared Input Mode: Pass full input to all branches
+                m_outputs.push_back(branch->forward(input));
+            } else {
+                // Standard Slicing Mode: Split input features horizontally
+                size_t inSize = branch->getInputSize();
+                owTensor<float, 2> slicedInput(batch, inSize);
+                for (size_t i = 0; i < batch; ++i) {
+                    for (size_t j = 0; j < inSize; ++j) {
+                        slicedInput(i, j) = input(i, currentInOffset + j);
+                    }
                 }
+                m_outputs.push_back(branch->forward(slicedInput));
+                currentInOffset += inSize;
             }
-            
-            m_outputs.push_back(branch->forward(slicedInput));
-            currentInOffset += inSize;
         }
 
         // Concatenate all branch outputs
@@ -132,9 +150,7 @@ public:
     }
 
     /**
-     * @brief Performs the backward pass by splitting the gradient and propagating through branches.
-     * @param outputGradient Gradient from the next layer [BatchSize, TotalOutputSize].
-     * @return Combined input gradient [BatchSize, TotalInputSize].
+     * @brief Performs the backward pass.
      */
     owTensor<float, 2> backward(const owTensor<float, 2>& outputGradient) override {
         size_t batch = outputGradient.shape()[0];
@@ -157,27 +173,55 @@ public:
             currentOutOffset += outSize;
         }
 
-        // Concatenate all input gradients
-        owTensor<float, 2> result(batch, getInputSize());
-        size_t currentInOffset = 0;
-        for (const auto& inGrad : inputGradients) {
-            size_t inSize = inGrad.shape()[1];
-            for (size_t i = 0; i < batch; ++i) {
-                for (size_t j = 0; j < inSize; ++j) {
-                    result(i, currentInOffset + j) = inGrad(i, j);
-                }
-            }
-            currentInOffset += inSize;
-        }
+        if (m_useSharedInput) {
+            // Shared Input Mode: Sum all branch gradients for the same input
+            if (inputGradients.empty()) return owTensor<float, 2>(0, 0);
+            
+            size_t inSize = inputGradients[0].shape()[1];
+            owTensor<float, 2> result(batch, inSize);
+            result.setZero();
 
-        return result;
+            // For shared input, we assume all branches receive the same size input.
+            for (const auto& grad : inputGradients) {
+                result = result + grad;
+            }
+            return result;
+        } else {
+            // Standard Slicing Mode: Concatenate input gradients
+            owTensor<float, 2> result(batch, getInputSize());
+            size_t currentInOffset = 0;
+            for (const auto& inGrad : inputGradients) {
+                size_t inSize = inGrad.shape()[1];
+                for (size_t i = 0; i < batch; ++i) {
+                    for (size_t j = 0; j < inSize; ++j) {
+                        result(i, currentInOffset + j) = inGrad(i, j);
+                    }
+                }
+                currentInOffset += inSize;
+            }
+            return result;
+        }
     }
 
     /**
-     * @brief Triggers the training update for all internal branches.
+     * @brief Triggers the training update for internal branches, respecting freezing state.
      */
     void train() override {
-        for (auto& branch : m_branches) branch->train();
+        if (m_isFrozen) return;
+        for (auto& branch : m_branches) {
+            if (!branch->isFrozen()) branch->train();
+        }
+    }
+
+    /**
+     * @brief Assigns an optimizer to this layer and all its branches.
+     * @param opt Pointer to the optimizer.
+     */
+    void setOptimizer(owOptimizer* opt) override {
+        owLayer::setOptimizer(opt);
+        for (auto& branch : m_branches) {
+            branch->setOptimizer(opt);
+        }
     }
 
     /**
@@ -195,7 +239,7 @@ public:
     std::shared_ptr<owLayer> clone() const override {
         std::vector<std::shared_ptr<owLayer>> branchCopies;
         for (const auto& b : m_branches) branchCopies.push_back(b->clone());
-        auto copy = std::make_shared<owConcatenateLayer>(branchCopies);
+        auto copy = std::make_shared<owConcatenateLayer>(branchCopies, m_useSharedInput);
         copy->m_layerName = m_layerName;
         return copy;
     }
@@ -207,6 +251,7 @@ public:
     std::string toXML() const override {
         std::stringstream ss;
         ss << "<BranchCount>" << m_branches.size() << "</BranchCount>\n";
+        ss << "<UseSharedInput>" << (m_useSharedInput ? 1 : 0) << "</UseSharedInput>\n";
         for (size_t i = 0; i < m_branches.size(); ++i) {
             ss << "<Branch_" << i << " type=\"" << m_branches[i]->getLayerName() << "\">\n" 
                << m_branches[i]->toXML() << "</Branch_" << i << ">\n";
@@ -220,8 +265,9 @@ public:
      * @param xml XML content for the layer.
      */
     void fromXML(const std::string& xml) override {
-        // Full reconstruction is handled recursively by owNeuralNetwork::loadFromXML.
-        // This method will only update parameters if the branches are already set.
+        std::string sharedVal = owLayer::getTagContent(xml, "UseSharedInput");
+        if (!sharedVal.empty()) m_useSharedInput = (std::stoi(sharedVal) == 1);
+        
         for (size_t i = 0; i < m_branches.size(); ++i) {
             std::string tag = "Branch_" + std::to_string(i);
             m_branches[i]->fromXML(owLayer::getNestedTagContent(xml, tag));
@@ -238,6 +284,7 @@ public:
 private:
     std::vector<std::shared_ptr<owLayer>> m_branches; ///< Internal storage for parallel branches.
     std::vector<owTensor<float, 2>> m_outputs;      ///< Cached outputs of branches for the backward pass.
+    bool m_useSharedInput = false; ///< Flag for Multi-Scale View mode.
 };
 
 } // namespace ow

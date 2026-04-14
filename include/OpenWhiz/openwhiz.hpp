@@ -95,8 +95,9 @@
 #include "layers/owQuantileLayer.hpp"
 #include "layers/owRankingLayer.hpp"
 #include "layers/owSmoothingLayer.hpp"
-#include "layers/owSlidingWindowLayer.hpp"
 #include "layers/owRescalingLayer.hpp"
+#include "layers/owSequentialLayer.hpp"
+#include "layers/owSlidingWindowLayer.hpp"
 
 // Implementation of owNeuralNetwork inline methods (must be last)
 #include "core/owNeuralNetwork.inl"
