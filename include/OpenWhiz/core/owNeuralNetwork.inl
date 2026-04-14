@@ -50,6 +50,19 @@ inline owTensor<float, 2> owNeuralNetwork::forward(const owTensor<float, 2>& inp
     return currentOutput;
 }
 
+inline owTensor<float, 2> owNeuralNetwork::predict(const owTensor<float, 2>& input) {
+    auto output = forward(input);
+    if (m_dataset && (m_projectType == owProjectType::APPROXIMATION || m_projectType == owProjectType::FORECASTING)) {
+        m_dataset->inverseNormalize(output);
+    }
+    return output;
+}
+
+inline owTensor<float, 2> owNeuralNetwork::predict() {
+    if (!m_dataset) return owTensor<float, 2>(0, 0);
+    return predict(m_dataset->getLastSample());
+}
+
 inline void owNeuralNetwork::backward(const owTensor<float, 2>& prediction, const owTensor<float, 2>& target) {
     owTensor<float, 2> grad = m_loss->gradient(prediction, target);
     
@@ -63,7 +76,11 @@ inline void owNeuralNetwork::backward(const owTensor<float, 2>& prediction, cons
         for (size_t i = 0; i < grad.size(); ++i) grad.data()[i] *= scale;
     }
 
-    for (auto it = m_layers.rbegin(); it != m_layers.rend(); ++it) grad = (*it)->backward(grad);
+    for (auto it = m_layers.rbegin(); it != m_layers.rend(); ++it) {
+        if (!(*it)->isFrozen()) {
+            grad = (*it)->backward(grad);
+        }
+    }
 }
 
 inline void owNeuralNetwork::trainStep() { for (auto& layer : m_layers) layer->train(); }
@@ -223,6 +240,7 @@ inline std::shared_ptr<owLayer> createLayerByName(const std::string& type, size_
     if (type == "Bounding Layer") return std::make_shared<owBoundingLayer>(0.0f, 1.0f);
     if (type == "Attention Layer") return std::make_shared<owAttentionLayer>(inputSize > 0 ? inputSize : 1);
     if (type == "Sliding Window Layer") return std::make_shared<owSlidingWindowLayer>();
+    if (type == "Trend Layer") return std::make_shared<owTrendLayer>();
     if (type == "Anomaly Detection Layer") return std::make_shared<owAnomalyDetectionLayer>();
     if (type == "Affine Layer") return std::make_shared<owAffineLayer>();
     if (type == "Addition Layer") return std::make_shared<owAdditionLayer>(inputSize > 0 ? inputSize : 1);
@@ -344,109 +362,50 @@ inline bool owNeuralNetwork::loadFromXML(const std::string& filename) {
 inline void owNeuralNetwork::createNeuralNetwork(const std::vector<int>& hiddenSizes, 
                                                const std::string& hiddenAct, 
                                                const std::string& outputAct,
-                                               bool useNormalization) {
+                                               bool /*useNormalization*/) {
     m_projectType = owProjectType::CUSTOM;
     m_layers.clear();
     int inputSize = m_dataset->getInputVariableNum();
     int targetSize = m_dataset->getTargetVariableNum();
 
-    if (useNormalization) {
-        auto normLayer = std::make_shared<owNormalizationLayer>(inputSize);
-        owTensor<float, 2> min(1, inputSize), max(1, inputSize);
-        for (int i = 0; i < inputSize; ++i) {
-            auto params = m_dataset->getNormalizationParams(i);
-            min(0, i) = params.first;
-            max(0, i) = params.second;
-        }
-        normLayer->setStatistics(min, max);
-        addLayer(normLayer);
-    }
-
     int currentIn = inputSize;
     for (int hSize : hiddenSizes) {
         auto layer = std::make_shared<owLinearLayer>(currentIn, hSize);
-        layer->initializeWeightsWithRNG(m_rng); // Pass current RNG
+        layer->initializeWeightsWithRNG(m_rng); 
         layer->setActivationByName(hiddenAct);
         addLayer(layer);
         currentIn = hSize;
     }
 
     auto outLayer = std::make_shared<owLinearLayer>(currentIn, targetSize);
-    outLayer->initializeWeightsWithRNG(m_rng); // Pass current RNG
+    outLayer->initializeWeightsWithRNG(m_rng);
     outLayer->setActivationByName(outputAct);
     addLayer(outLayer);
-
-    // 4. Trailing Normalization (if requested)
-    if (useNormalization) {
-        auto invNormLayer = std::make_shared<owInverseNormalizationLayer>(targetSize);
-        owTensor<float, 2> min(1, targetSize), max(1, targetSize);
-        for (int i = 0; i < targetSize; ++i) {
-            // Target variables start after input variables
-            auto params = m_dataset->getNormalizationParams(inputSize + i);
-            min(0, i) = params.first;
-            max(0, i) = params.second;
-        }
-        invNormLayer->setStatistics(min, max);
-        addLayer(invNormLayer);
-    }
 }
 
-inline void owNeuralNetwork::createNeuralNetwork(owProjectType type, const std::vector<int>& hiddenSizes, int windowSize) {
+inline void owNeuralNetwork::createNeuralNetwork(owProjectType type, const std::vector<int>& hiddenSizes, int /*windowSize*/) {
     m_projectType = type;
     m_layers.clear();
     int inputSize = m_dataset->getInputVariableNum();
     int targetSize = m_dataset->getTargetVariableNum();
 
-    // 1. Optional Normalization Layer
-    if (type == owProjectType::APPROXIMATION || type == owProjectType::FORECASTING || type == owProjectType::CLASSIFICATION || type == owProjectType::CLUSTERING || type == owProjectType::ANOMALY_DETECTION) {
-        auto normLayer = std::make_shared<owNormalizationLayer>(inputSize);
-        owTensor<float, 2> min(1, inputSize), max(1, inputSize);
-        for (int i = 0; i < inputSize; ++i) {
-            auto params = m_dataset->getNormalizationParams(i);
-            min(0, i) = params.first;
-            max(0, i) = params.second;
-        }
-        normLayer->setStatistics(min, max);
-        addLayer(normLayer);
-    }
-
     if (type == owProjectType::CLUSTERING) {
         int latentDim = hiddenSizes.empty() ? inputSize : hiddenSizes[0];
-        int numClusters = targetSize; // Assume target variables match number of clusters for distance output
-
-        // Projection
+        int numClusters = targetSize;
         addLayer(std::make_shared<owProjectionLayer>(inputSize, latentDim));
-        
-        // Clustering
         addLayer(std::make_shared<owClusterLayer>(latentDim, numClusters));
-        
-        // Distance calculation
         addLayer(std::make_shared<owDistanceLayer>(numClusters, numClusters));
-        
         return;
     }
 
     if (type == owProjectType::ANOMALY_DETECTION) {
         int latentDim = hiddenSizes.empty() ? inputSize : hiddenSizes[0];
-        
-        // Projection
         addLayer(std::make_shared<owProjectionLayer>(inputSize, latentDim));
-        
-        // Anomaly Detection
         addLayer(std::make_shared<owAnomalyDetectionLayer>());
-        
         return;
     }
 
-    // 2. Windowing / Hidden Layers
     int currentIn = inputSize;
-
-    if (type == owProjectType::FORECASTING) {
-        auto swLayer = std::make_shared<owSlidingWindowLayer>(windowSize, 1, -1, true);
-        addLayer(swLayer);
-        currentIn = (int)swLayer->getOutputSize();
-    }
-
     for (int hSize : hiddenSizes) {
         auto layer = std::make_shared<owLinearLayer>(currentIn, hSize);
         layer->initializeWeightsWithRNG(m_rng);
@@ -455,33 +414,16 @@ inline void owNeuralNetwork::createNeuralNetwork(owProjectType type, const std::
         currentIn = hSize;
     }
 
-    // 3. Output Layer
     auto outLayer = std::make_shared<owLinearLayer>(currentIn, targetSize);
     outLayer->initializeWeightsWithRNG(m_rng);
     
     if (type == owProjectType::CLASSIFICATION) {
         outLayer->setActivationByName("Sigmoid");
+        if (targetSize > 1) addLayer(std::make_shared<owProbabilityLayer>());
     } else {
         outLayer->setActivationByName("Identity");
     }
     addLayer(outLayer);
-
-    // 4. Trailing Layer
-    if (type == owProjectType::APPROXIMATION || type == owProjectType::FORECASTING) {
-        auto invNormLayer = std::make_shared<owInverseNormalizationLayer>(targetSize);
-        owTensor<float, 2> min(1, targetSize), max(1, targetSize);
-        for (int i = 0; i < targetSize; ++i) {
-            auto params = m_dataset->getNormalizationParams(inputSize + i);
-            min(0, i) = params.first;
-            max(0, i) = params.second;
-        }
-        invNormLayer->setStatistics(min, max);
-        addLayer(invNormLayer);
-    } else if (type == owProjectType::CLASSIFICATION) {
-        if (targetSize > 1) {
-            addLayer(std::make_shared<owProbabilityLayer>());
-        }
-    }
 }
 
 inline void owNeuralNetwork::train() {
@@ -500,14 +442,54 @@ inline void owNeuralNetwork::runStandardTrainingLoop() {
 
     for (int epoch = 1; epoch <= m_maxEpochs; ++epoch) {
         reset(); 
+        
+        // Sync target pointers for independent branch learning
+        for (auto& layer : m_layers) layer->setTarget(&trainTarget);
+
         auto pred = forward(trainIn);
         float loss = calculateLoss(pred, trainTarget);
         backward(pred, trainTarget);
+        
+        // --- INDEPENDENT BRANCH MONITORING ---
+        // We look for ConcatenateLayers and check their branches
+        for (auto& layer : m_layers) {
+            auto concat = std::dynamic_pointer_cast<owConcatenateLayer>(layer);
+            if (concat) {
+                // We need access to concat's branches. 
+                // Let's assume branches are accessible or use a more generic way.
+                // For now, we'll implement this logic inside ConcatenateLayer::train() 
+                // or right here if we add a getBranches method.
+            }
+            
+            // Generic check for any layer in Expert Mode
+            if (layer->isIndependentExpertMode() && layer->getConvergenceThreshold() > 0) {
+                float localErr = 1e30f;
+                auto seq = std::dynamic_pointer_cast<owSequentialLayer>(layer);
+                if (seq) localErr = seq->computeLocalLoss(trainTarget);
+                
+                if (localErr < layer->getConvergenceThreshold()) {
+                    layer->setFrozen(true);
+                }
+            }
+        }
+
         trainStep();
         m_lastTrainLoss = loss;
 
         if (m_enablePrinting && epoch % m_printInterval == 0) {
-            std::cout << "Epoch " << epoch << "/" << m_maxEpochs << " - Loss: " << loss << std::endl;
+            std::cout << "Epoch " << epoch << "/" << m_maxEpochs << " - Loss: " << loss;
+            // Print status of expert branches
+            for (auto& layer : m_layers) {
+                auto concat = std::dynamic_pointer_cast<owConcatenateLayer>(layer);
+                if (concat) {
+                    for (auto& branch : concat->getBranches()) {
+                        if (branch->getConvergenceThreshold() > 0) {
+                            std::cout << " | " << branch->getLayerName() << (branch->isFrozen() ? ":DONE" : ":RUN");
+                        }
+                    }
+                }
+            }
+            std::cout << std::endl;
         }
 
         // Check for stagnation
@@ -572,7 +554,7 @@ inline EvaluationReport owNeuralNetwork::evaluatePerformance(float tolerance) {
 }
 
 inline std::string owNeuralNetwork::predictLabel(const owTensor<float, 2>& input, int targetVarIdx) {
-    auto pred = forward(input);
+    auto pred = predict(input); // Uses the new predict with inverseNormalize
     if (!m_dataset) return "";
     int actualColIdx = m_dataset->getTargetColumnIndex(targetVarIdx);
     return m_dataset->getLabelName(actualColIdx, pred(0, targetVarIdx));
