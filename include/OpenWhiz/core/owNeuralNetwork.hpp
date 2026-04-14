@@ -354,6 +354,18 @@ public:
     owTensor<float, 2> forward(const owTensor<float, 2>& input);
 
     /**
+     * @brief High-level prediction method that applies inverse normalization if needed.
+     * @param input Input features.
+     * @return Processed output (e.g., actual price in forecasting).
+     */
+    owTensor<float, 2> predict(const owTensor<float, 2>& input);
+
+    /**
+     * @brief Prediction using the last sample from the dataset.
+     */
+    owTensor<float, 2> predict();
+
+    /**
      * @brief Performs a backward pass (backpropagation) through all layers.
      * @param prediction The output from the forward pass.
      * @param target The expected ground truth values.
@@ -460,6 +472,11 @@ public:
      * @brief Retrieves the number of neurons in each layer.
      */
     owTensor<float, 1> getNeuronNums() const;
+
+    /**
+     * @brief Manually sets the project type to influence high-level behaviors like prediction scaling.
+     */
+    void setProjectType(owProjectType type) { m_projectType = type; }
 
     /**
      * @brief Retrieves the current project type configuration.

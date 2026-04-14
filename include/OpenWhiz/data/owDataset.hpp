@@ -111,7 +111,7 @@ public:
      * Categorical: Automatically detects text columns and applies label encoding.
      * Delimiter: Automatically detected if not explicitly set.
      */
-    bool loadFromCSV(const std::string& filepath, bool has_header = true) {
+    bool loadFromCSV(const std::string& filepath, bool has_header = true, bool autoNormalize = true) {
         std::ifstream file(filepath);
         if (!file.is_open()) return false;
         std::string line;
@@ -225,7 +225,8 @@ public:
         }
         m_sampleTypes.assign(rows, SampleType::Training);
         shuffleSampleTypes();
-        autoNormalize(m_autoNormalizeEnabled);
+        m_autoNormalizeEnabled = autoNormalize;
+        if (m_autoNormalizeEnabled) normalizeData();
         return true;
     }
 
@@ -290,9 +291,15 @@ public:
         return count;
     }
 
+    size_t getSampleNum() const { return m_fullData.shape()[0]; }
+
     owTensor<float, 2> getData() const { return m_fullData; }
 
-    void autoNormalize(bool applyScaling = true) {
+    /**
+     * @brief Normalizes the entire dataset in-place using Min-Max scaling.
+     * After this call, m_fullData will contain values in the [0, 1] range.
+     */
+    void normalizeData() {
         if (m_fullData.size() == 0) return;
         size_t rows = m_fullData.shape()[0];
         size_t cols = m_fullData.shape()[1];
@@ -304,12 +311,80 @@ public:
             }
             m_columns[c].min = minVal;
             m_columns[c].max = maxVal;
-            if (applyScaling && m_columns[c].usage == ColumnUsage::USED) {
-                float range = maxVal - minVal;
-                if (range == 0) range = 1.0f;
-                for (size_t r = 0; r < rows; ++r) m_fullData(r, c) = (m_fullData(r, c) - minVal) / range;
+            
+            float range = maxVal - minVal;
+            if (range == 0.0f) range = 1.0f;
+            
+            for (size_t r = 0; r < rows; ++r) {
+                m_fullData(r, c) = (m_fullData(r, c) - minVal) / range;
             }
         }
+        m_autoNormalizeEnabled = false; // Scaled in-place, no need for on-the-fly scaling
+    }
+
+    /**
+     * @brief Scales a prediction or value back to its original range.
+     */
+    void inverseNormalize(owTensor<float, 2>& data, int targetVarIdx = 0) {
+        int actualColIdx = getTargetColumnIndex(targetVarIdx);
+        float minV = m_columns[actualColIdx].min;
+        float maxV = m_columns[actualColIdx].max;
+        float range = maxV - minV;
+        if (range == 0.0f) range = 1.0f;
+        
+        for (size_t i = 0; i < data.shape()[0]; ++i) {
+            for (size_t j = 0; j < data.shape()[1]; ++j) {
+                data(i, j) = data(i, j) * range + minV;
+            }
+        }
+    }
+
+    /**
+     * @brief Transforms the dataset into a windowed format for time-series forecasting.
+     * This expands the features by prepending historical values to each sample.
+     */
+    void prepareForecastData(int windowSize, int dilation = 1) {
+        if (m_fullData.size() == 0 || windowSize <= 0) return;
+        size_t originalRows = m_fullData.shape()[0];
+        size_t originalCols = m_fullData.shape()[1];
+        int inputCols = (int)originalCols - m_targetVariableNum;
+        
+        size_t offset = (size_t)windowSize * (size_t)dilation;
+        if (originalRows <= offset) return;
+
+        size_t newRows = originalRows - offset;
+        size_t newCols = (size_t)windowSize + originalCols;
+        
+        owTensor<float, 2> newData(newRows, newCols);
+        std::vector<SampleType> newSampleTypes(newRows);
+
+        for (size_t i = 0; i < newRows; ++i) {
+            size_t actualIdx = i + offset;
+            
+            // 1. Fill History (using the first target variable as default reference)
+            for (int w = 0; w < windowSize; ++w) {
+                size_t lookback = (size_t)(windowSize - w) * (size_t)dilation;
+                newData(i, (size_t)w) = m_fullData(actualIdx - lookback, (size_t)inputCols);
+            }
+            
+            // 2. Fill current row data
+            for (size_t j = 0; j < originalCols; ++j) {
+                newData(i, (size_t)windowSize + j) = m_fullData(actualIdx, j);
+            }
+            
+            newSampleTypes[i] = m_sampleTypes[actualIdx];
+        }
+
+        m_fullData = newData;
+        m_sampleTypes = newSampleTypes;
+
+        // Update column metadata
+        std::vector<ColumnInfo> newColumns;
+        for (int w = 0; w < windowSize; ++w) {
+            newColumns.push_back({"History_" + std::to_string(windowSize - w), DataType::Numeric, Ordering::Standard, ColumnUsage::USED});
+        }
+        for (const auto& col : m_columns) newColumns.push_back(col);
+        m_columns = newColumns;
     }
 
     owTensor<float, 2> getLastSample() const {
@@ -326,6 +401,13 @@ public:
         if (usedColIdx < 0 || (size_t)usedColIdx >= indices.size()) return {0.0f, 1.0f};
         int actualIdx = indices[usedColIdx];
         return {m_columns[actualIdx].min, m_columns[actualIdx].max};
+    }
+
+    std::pair<float, float> getNormalizationParams(const std::string& name) const {
+        for (const auto& col : m_columns) {
+            if (col.name == name) return {col.min, col.max};
+        }
+        return {0.0f, 1.0f};
     }
 
     owTensor<float, 2> getRowsAndColsFiltered(SampleType targetType, bool isInput) const {
@@ -345,7 +427,21 @@ public:
         size_t curr = 0;
         for (size_t i = 0; i < m_sampleTypes.size(); ++i) {
             if (m_sampleTypes[i] == targetType) {
-                for (size_t j = 0; j < colIndices.size(); ++j) res(curr, j) = m_fullData(i, (size_t)colIndices[j]);
+                for (size_t j = 0; j < colIndices.size(); ++j) {
+                    int colIdx = colIndices[j];
+                    float val = m_fullData(i, (size_t)colIdx);
+                    
+                    // Apply scaling ON-THE-FLY if enabled
+                    if (m_autoNormalizeEnabled && m_columns[colIdx].usage == ColumnUsage::USED) {
+                        float minV = m_columns[colIdx].min;
+                        float maxV = m_columns[colIdx].max;
+                        float range = maxV - minV;
+                        if (range == 0) range = 1.0f;
+                        val = (val - minV) / range;
+                    }
+                    
+                    res(curr, j) = val;
+                }
                 curr++;
             }
         }
@@ -359,26 +455,30 @@ public:
     owTensor<float, 2> getTestInput() const { return getRowsAndColsFiltered(SampleType::Test, true); }
     owTensor<float, 2> getTestTarget() const { return getRowsAndColsFiltered(SampleType::Test, false); }
 
-    void setRatios(float train, float val, float test) {
+    void setRatios(float train, float val, float test, bool shuffle = true) {
         m_trainRatio = train; m_valRatio = val; m_testRatio = test;
-        shuffleSampleTypes();
+        shuffleSampleTypes(shuffle);
     }
 
     void setDelimiter(char d) { m_delimiter = d; }
     char getDelimiter() const { return m_delimiter; }
 
-    void shuffleSampleTypes() {
+    void shuffleSampleTypes(bool shuffle = true) {
         if (m_sampleTypes.empty()) return;
         size_t rows = m_sampleTypes.size();
         size_t trainCount = (size_t)(rows * m_trainRatio);
         size_t valCount = (size_t)(rows * m_valRatio);
+        
         std::vector<SampleType> newTypes(rows);
         for (size_t i = 0; i < rows; ++i) {
             if (i < trainCount) newTypes[i] = SampleType::Training;
             else if (i < trainCount + valCount) newTypes[i] = SampleType::Validation;
             else newTypes[i] = SampleType::Test;
         }
-        std::shuffle(newTypes.begin(), newTypes.end(), m_rng);
+        
+        if (shuffle) {
+            std::shuffle(newTypes.begin(), newTypes.end(), m_rng);
+        }
         m_sampleTypes = newTypes;
     }
 
