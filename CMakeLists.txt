@@ -14,7 +14,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Add examples
-add_subdirectory(examples/tryusdForecastExample)
+add_subdirectory(examples/cac40ForecastExample)
+#add_subdirectory(examples/tryusdForecastExample)
 #add_subdirectory(examples/tryusdConcatenateForecastingExample)
 #add_subdirectory(examples/forecastExample)
 #add_subdirectory(examples/concatenateForecastingExample)
