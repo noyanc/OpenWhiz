@@ -76,15 +76,13 @@ public:
         owTensor<float, 2> output(batchSize, getOutputSize());
         
         for (size_t i = 0; i < batchSize; ++i) {
-            // 1. Slice History from Master
-            // Dataset puts History_1 (t-1) at index m_masterWindowSize - 1
+            // 1. Slice History from Master Chronologically [t-window, ..., t-1]
+            // Dataset has Master History at indices 0 to m_masterWindowSize - 1
             for (size_t w = 0; w < m_windowSize; ++w) {
-                size_t lookbackSteps = (w + 1) * m_dilation;
-                if (lookbackSteps <= m_masterWindowSize) {
-                    output(i, w) = input(i, m_masterWindowSize - lookbackSteps);
-                } else {
-                    output(i, w) = 0.0f; 
-                }
+                // To get chronological order ending at t-1:
+                // If w=0, we want t-windowSize. If w=windowSize-1, we want t-1.
+                size_t masterIdx = m_masterWindowSize - m_windowSize + w;
+                output(i, w) = input(i, masterIdx);
             }
             
             // 2. Append Features (F1...Fn)

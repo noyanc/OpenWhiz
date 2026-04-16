@@ -87,8 +87,8 @@ public:
      * @brief Initializes weights using Xavier initialization.
      */
     void initializeWeights() {
-        auto seed = std::chrono::system_clock::now().time_since_epoch().count();
-        std::default_random_engine generator(static_cast<unsigned int>(seed));
+        std::random_device rd;
+        std::default_random_engine generator(rd());
         initializeWeightsWithRNG(generator);
     }
 
