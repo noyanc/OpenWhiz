@@ -43,18 +43,33 @@ class owLinearLayer : public owLayer {
 public:
     /**
      * @brief Constructor for owLinearLayer.
-     * @param inputSize Number of input features.
+     * @param inputSize Number of input features (optional, can be auto-chained).
      * @param outputSize Number of output neurons.
      */
-    owLinearLayer(size_t inputSize, size_t outputSize) 
+    owLinearLayer(size_t inputSize = 0, size_t outputSize = 1) 
         : m_inputSize(inputSize), m_outputSize(outputSize),
           m_params(m_inputSize * m_outputSize + m_outputSize),
           m_grads(m_inputSize * m_outputSize + m_outputSize),
-          m_weights(m_params.data(), owTensorShape{inputSize, outputSize}),
-          m_biases(m_params.data() + (inputSize * outputSize), owTensorShape{1, outputSize}),
-          m_weightGradients(m_grads.data(), owTensorShape{inputSize, outputSize}),
-          m_biasGradients(m_grads.data() + (inputSize * outputSize), owTensorShape{1, outputSize}) {
+          m_weights(m_params.data(), owTensorShape{m_inputSize, m_outputSize}),
+          m_biases(m_params.data() + (m_inputSize * m_outputSize), owTensorShape{1, m_outputSize}),
+          m_weightGradients(m_grads.data(), owTensorShape{m_inputSize, m_outputSize}),
+          m_biasGradients(m_grads.data() + (m_inputSize * m_outputSize), owTensorShape{1, m_outputSize}) {
         m_layerName = "Linear Layer";
+        if (m_inputSize > 0) initializeWeights();
+    }
+
+    /**
+     * @brief Sets the input feature size and reinitializes parameters if needed.
+     */
+    void setInputSize(size_t size) override {
+        if (m_inputSize == size) return;
+        m_inputSize = size;
+        m_params = owTensor<float, 1>(m_inputSize * m_outputSize + m_outputSize);
+        m_grads = owTensor<float, 1>(m_inputSize * m_outputSize + m_outputSize);
+        m_weights = owTensorMap<float, 2>(m_params.data(), owTensorShape{m_inputSize, m_outputSize});
+        m_biases = owTensorMap<float, 2>(m_params.data() + (m_inputSize * m_outputSize), owTensorShape{1, m_outputSize});
+        m_weightGradients = owTensorMap<float, 2>(m_grads.data(), owTensorShape{m_inputSize, m_outputSize});
+        m_biasGradients = owTensorMap<float, 2>(m_grads.data() + (m_inputSize * m_outputSize), owTensorShape{1, m_outputSize});
         initializeWeights();
     }
 
