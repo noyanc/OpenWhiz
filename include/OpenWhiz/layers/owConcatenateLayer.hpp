@@ -286,6 +286,14 @@ public:
         for (auto& b : m_branches) if (b->isEnabled()) b->reset();
     }
 
+    void lockCache() override {
+        for (auto& b : m_branches) if (b->isEnabled()) b->lockCache();
+    }
+
+    void setPlaybackMode(bool enabled) override {
+        for (auto& b : m_branches) if (b->isEnabled()) b->setPlaybackMode(enabled);
+    }
+
     std::shared_ptr<owLayer> clone() const override {
         auto copy = std::make_shared<owConcatenateLayer>(std::vector<std::shared_ptr<owBranch>>(), m_useSharedInput);
         copy->m_layerName = m_layerName;

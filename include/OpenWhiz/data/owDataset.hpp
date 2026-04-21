@@ -111,7 +111,7 @@ public:
      * Categorical: Automatically detects text columns and applies label encoding.
      * Delimiter: Automatically detected if not explicitly set.
      */
-    bool loadFromCSV(const std::string& filepath, bool has_header = true, bool autoNormalize = false) {
+    bool loadFromCSV(const std::string& filepath, bool hasHeader = true, bool autoNormalize = false) {
         std::ifstream file(filepath);
         if (!file.is_open()) return false;
         std::string line;
@@ -124,8 +124,6 @@ public:
             
             for (char cnd : candidates) {
                 int count = (int)std::count(line.begin(), line.end(), cnd);
-                // If we find a candidate with more occurrences, it's the new best.
-                // The order of 'candidates' ensures priority in case of ties.
                 if (count > max_c) {
                     max_c = count;
                     best_d = cnd;
@@ -133,7 +131,6 @@ public:
             }
             m_delimiter = best_d;
             
-            // Reset file pointer to beginning
             file.clear();
             file.seekg(0);
         }
@@ -143,17 +140,18 @@ public:
         auto isID = [](const std::string& name) {
             if (name.length() < 2) return false;
             std::string suffix = name.substr(name.length() - 2);
-            for (char &c : suffix) c = std::toupper(c);
+            for (char &c : suffix) c = (char)std::toupper((unsigned char)c);
             return suffix == "ID";
         };
 
-        if (has_header && std::getline(file, line)) {
+        if (hasHeader && std::getline(file, line)) {
             std::stringstream ss(line);
             std::string col;
             int idx = 0;
             while (std::getline(ss, col, m_delimiter)) {
-                if (!isID(col)) {
-                    m_columns.push_back({col, DataType::Numeric, Ordering::Standard, ColumnUsage::USED, {}, {}, 0.0f, 1.0f});
+                std::string cleaned = cleanColumnName(col);
+                if (!isID(cleaned)) {
+                    m_columns.push_back({cleaned, DataType::Numeric, Ordering::Standard, ColumnUsage::USED, {}, {}, 0.0f, 1.0f});
                     col_indices.push_back(idx);
                 }
                 idx++;
@@ -195,15 +193,24 @@ public:
             bool all_numeric = true;
             for (size_t r = 0; r < rows; ++r) {
                 const std::string& val = raw_data[r][c];
-                if (val.empty()) continue;
-                try {
-                    std::size_t pos;
-                    std::stof(val, &pos);
-                    if (pos != val.length()) all_numeric = false;
-                } catch (...) {
-                    all_numeric = false;
+                if (val.empty() || val == "NaN" || val == "null" || val == "nan") continue;
+                
+                bool has_digit = false;
+                bool dot_seen = false;
+                bool valid = true;
+                for (size_t i = 0; i < val.length(); ++i) {
+                    if (i == 0 && (val[i] == '-' || val[i] == '+')) continue;
+                    if (val[i] == '.' || val[i] == ',') {
+                        if (dot_seen) { valid = false; break; }
+                        dot_seen = true;
+                    } else if (std::isdigit((unsigned char)val[i])) {
+                        has_digit = true;
+                    } else {
+                        valid = false;
+                        break;
+                    }
                 }
-                if (!all_numeric) break;
+                if (!valid || !has_digit) { all_numeric = false; break; }
             }
 
             if (!all_numeric) {
@@ -224,7 +231,6 @@ public:
             for (size_t r = 0; r < rows; ++r) m_fullData(r, c) = parseValue(raw_data[r][c], m_columns[c]);
         }
 
-        // Always calculate statistics (min/max) even if not normalizing in-place
         calculateStatistics();
 
         m_sampleTypes.assign(rows, SampleType::Training);
@@ -238,9 +244,6 @@ public:
     void setTargetVariableNum(int num) { m_targetVariableNum = num; }
     int getTargetVariableNum() const { return m_targetVariableNum; }
 
-    /**
-     * @brief Calculates min/max statistics for each column in the dataset.
-     */
     void calculateStatistics() {
         if (m_fullData.size() == 0) return;
         size_t rows = m_fullData.shape()[0];
@@ -256,9 +259,6 @@ public:
         }
     }
 
-    /**
-     * @brief Returns the string label for a numeric category ID.
-     */
     std::string getLabelName(int actualColIdx, float value) const {
         if (actualColIdx < 0 || (size_t)actualColIdx >= m_columns.size()) return "";
         const auto& info = m_columns[actualColIdx];
@@ -271,56 +271,45 @@ public:
         return std::to_string(value);
     }
 
-    /**
-     * @brief Gets the actual column index in the full dataset for a target variable.
-     */
     int getTargetColumnIndex(int targetVarIdx = 0) const {
-        int inputColsCount = (int)m_columns.size() - m_targetVariableNum;
-        return inputColsCount + targetVarIdx;
+        int inputColsBoundary = (int)m_columns.size() - m_targetVariableNum;
+        return inputColsBoundary + targetVarIdx;
     }
 
-    /**
-     * @brief Marks a column by name with a specific usage.
-     */
     void setColumnUsage(const std::string& name, ColumnUsage usage) {
+        std::string target = trim(name);
         for (auto& col : m_columns) {
-            if (col.name == name) {
+            if (trim(col.name) == target) {
                 col.usage = usage;
                 return;
             }
         }
     }
 
-    /**
-     * @brief Returns indices of columns that should be used for training/calculation.
-     */
     std::vector<int> getUsedColumnIndices(bool includeTarget = false) const {
         std::vector<int> indices;
-        int inputCols = (int)m_columns.size() - m_targetVariableNum;
-        for (int i = 0; i < inputCols; ++i) {
-            if (m_columns[i].usage == ColumnUsage::USED) indices.push_back(i);
-        }
-        if (includeTarget) {
-            for (int i = inputCols; i < (int)m_columns.size(); ++i) indices.push_back(i);
+        if (!includeTarget) {
+            for (int i = 0; i < (int)m_columns.size(); ++i) {
+                if (m_columns[i].usage == ColumnUsage::USED) indices.push_back(i);
+            }
+        } else {
+            int inputColsBoundary = (int)m_columns.size() - m_targetVariableNum;
+            for (int i = inputColsBoundary; i < (int)m_columns.size(); ++i) {
+                indices.push_back(i);
+            }
         }
         return indices;
     }
 
     int getInputVariableNum() const { 
         int count = 0;
-        int inputCols = (int)m_columns.size() - m_targetVariableNum;
-        for (int i = 0; i < inputCols; ++i) if (m_columns[i].usage == ColumnUsage::USED) count++;
+        for (const auto& col : m_columns) if (col.usage == ColumnUsage::USED) count++;
         return count;
     }
 
     size_t getSampleNum() const { return m_fullData.shape()[0]; }
-
     owTensor<float, 2> getData() const { return m_fullData; }
 
-    /**
-     * @brief Normalizes the entire dataset in-place using Min-Max scaling.
-     * After this call, m_fullData will contain values in the [0, 1] range.
-     */
     void normalizeData() {
         if (m_fullData.size() == 0) return;
         calculateStatistics();
@@ -331,24 +320,19 @@ public:
             float maxVal = m_columns[c].max;
             float range = maxVal - minVal;
             if (range == 0.0f) range = 1.0f;
-            
             for (size_t r = 0; r < rows; ++r) {
                 m_fullData(r, c) = (m_fullData(r, c) - minVal) / range;
             }
         }
-        m_autoNormalizeEnabled = false; // Scaled in-place, no need for on-the-fly scaling
+        m_autoNormalizeEnabled = false; 
     }
 
-    /**
-     * @brief Scales a prediction or value back to its original range.
-     */
     void inverseNormalize(owTensor<float, 2>& data, int targetVarIdx = 0) {
         int actualColIdx = getTargetColumnIndex(targetVarIdx);
         float minV = m_columns[actualColIdx].min;
         float maxV = m_columns[actualColIdx].max;
         float range = maxV - minV;
         if (range == 0.0f) range = 1.0f;
-        
         for (size_t i = 0; i < data.shape()[0]; ++i) {
             for (size_t j = 0; j < data.shape()[1]; ++j) {
                 data(i, j) = data(i, j) * range + minV;
@@ -356,46 +340,30 @@ public:
         }
     }
 
-    /**
-     * @brief Transforms the dataset into a windowed format for time-series forecasting.
-     * This expands the features by prepending historical values to each sample.
-     */
     void prepareForecastData(int windowSize, int dilation = 1) {
         if (m_fullData.size() == 0 || windowSize <= 0) return;
         size_t originalRows = m_fullData.shape()[0];
         size_t originalCols = m_fullData.shape()[1];
-        int inputCols = (int)originalCols - m_targetVariableNum;
-        
+        int referenceCol = (int)originalCols - m_targetVariableNum;
         size_t offset = (size_t)windowSize * (size_t)dilation;
         if (originalRows <= offset) return;
-
         size_t newRows = originalRows - offset;
         size_t newCols = (size_t)windowSize + originalCols;
-        
         owTensor<float, 2> newData(newRows, newCols);
         std::vector<SampleType> newSampleTypes(newRows);
-
         for (size_t i = 0; i < newRows; ++i) {
             size_t actualIdx = i + offset;
-            
-            // 1. Fill History (using the first target variable as default reference)
             for (int w = 0; w < windowSize; ++w) {
                 size_t lookback = (size_t)(windowSize - w) * (size_t)dilation;
-                newData(i, (size_t)w) = m_fullData(actualIdx - lookback, (size_t)inputCols);
+                newData(i, (size_t)w) = m_fullData(actualIdx - lookback, (size_t)referenceCol);
             }
-            
-            // 2. Fill current row data
             for (size_t j = 0; j < originalCols; ++j) {
                 newData(i, (size_t)windowSize + j) = m_fullData(actualIdx, j);
             }
-            
             newSampleTypes[i] = m_sampleTypes[actualIdx];
         }
-
         m_fullData = newData;
         m_sampleTypes = newSampleTypes;
-
-        // Update column metadata
         std::vector<ColumnInfo> newColumns;
         for (int w = 0; w < windowSize; ++w) {
             newColumns.push_back({"History_" + std::to_string(windowSize - w), DataType::Numeric, Ordering::Standard, ColumnUsage::USED});
@@ -413,8 +381,13 @@ public:
         return res;
     }
 
+    std::pair<float, float> getNormalizationParamsByColumnIndex(int colIdx) const {
+        if (colIdx < 0 || (size_t)colIdx >= m_columns.size()) return {0.0f, 1.0f};
+        return {m_columns[colIdx].min, m_columns[colIdx].max};
+    }
+
     std::pair<float, float> getNormalizationParams(int usedColIdx) const {
-        std::vector<int> indices = getUsedColumnIndices(true);
+        std::vector<int> indices = getUsedColumnIndices(false);
         if (usedColIdx < 0 || (size_t)usedColIdx >= indices.size()) return {0.0f, 1.0f};
         int actualIdx = indices[usedColIdx];
         return {m_columns[actualIdx].min, m_columns[actualIdx].max};
@@ -422,24 +395,16 @@ public:
 
     std::pair<float, float> getNormalizationParams(const std::string& name) const {
         for (const auto& col : m_columns) {
-            if (col.name == name) return {col.min, col.max};
+            if (trim(col.name) == trim(name)) return {col.min, col.max};
         }
         return {0.0f, 1.0f};
     }
 
     owTensor<float, 2> getRowsAndColsFiltered(SampleType targetType, bool isInput) const {
-        std::vector<int> colIndices;
-        if (isInput) {
-            colIndices = getUsedColumnIndices(false);
-        } else {
-            int inputCols = (int)m_columns.size() - m_targetVariableNum;
-            for (int i = inputCols; i < (int)m_columns.size(); ++i) colIndices.push_back(i);
-        }
-
+        std::vector<int> colIndices = getUsedColumnIndices(!isInput);
         size_t rows = 0;
         for (auto t : m_sampleTypes) if (t == targetType) rows++;
         if (rows == 0) return owTensor<float, 2>(0, colIndices.size());
-
         owTensor<float, 2> res(rows, colIndices.size());
         size_t curr = 0;
         for (size_t i = 0; i < m_sampleTypes.size(); ++i) {
@@ -447,8 +412,6 @@ public:
                 for (size_t j = 0; j < colIndices.size(); ++j) {
                     int colIdx = colIndices[j];
                     float val = m_fullData(i, (size_t)colIdx);
-                    
-                    // Apply scaling ON-THE-FLY if enabled
                     if (m_autoNormalizeEnabled && m_columns[colIdx].usage == ColumnUsage::USED) {
                         float minV = m_columns[colIdx].min;
                         float maxV = m_columns[colIdx].max;
@@ -456,7 +419,6 @@ public:
                         if (range == 0) range = 1.0f;
                         val = (val - minV) / range;
                     }
-                    
                     res(curr, j) = val;
                 }
                 curr++;
@@ -485,14 +447,12 @@ public:
         size_t rows = m_sampleTypes.size();
         size_t trainCount = (size_t)(rows * m_trainRatio);
         size_t valCount = (size_t)(rows * m_valRatio);
-        
         std::vector<SampleType> newTypes(rows);
         for (size_t i = 0; i < rows; ++i) {
             if (i < trainCount) newTypes[i] = SampleType::Training;
             else if (i < trainCount + valCount) newTypes[i] = SampleType::Validation;
             else newTypes[i] = SampleType::Test;
         }
-        
         if (shuffle) {
             std::shuffle(newTypes.begin(), newTypes.end(), m_rng);
         }
@@ -512,7 +472,7 @@ private:
     std::vector<SampleType> m_sampleTypes;
     int m_targetVariableNum = 1;
     float m_trainRatio = 0.6f, m_valRatio = 0.2f, m_testRatio = 0.2f;
-    char m_delimiter = ';'; // Default changed to semicolon
+    char m_delimiter = ';'; 
     bool m_autoNormalizeEnabled = false;
     std::mt19937 m_rng;
 
@@ -522,7 +482,25 @@ private:
             if (it != info.category_map.end()) return it->second;
             return 0.0f;
         }
-        try { return std::stof(val); } catch (...) { return 0.0f; }
+        if (val.empty()) return 0.0f;
+        std::string s = val;
+        std::replace(s.begin(), s.end(), ',', '.');
+        try {
+            return std::stof(s);
+        } catch (...) {
+            return (float)std::atof(s.c_str());
+        }
+    }
+
+    std::string trim(const std::string& s) const {
+        size_t first = s.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+        if (first == std::string::npos) return "";
+        size_t last = s.find_last_not_of(" \t\r\n");
+        return s.substr(first, (last - first + 1));
+    }
+
+    std::string cleanColumnName(const std::string& name) const {
+        return trim(name);
     }
 };
 

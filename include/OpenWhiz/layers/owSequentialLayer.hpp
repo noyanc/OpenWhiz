@@ -194,6 +194,20 @@ public:
     }
 
     /**
+     * @brief Propagates lockCache signal to all internal layers.
+     */
+    void lockCache() override {
+        for (auto& layer : m_layers) layer->lockCache();
+    }
+
+    /**
+     * @brief Propagates setPlaybackMode signal to all internal layers.
+     */
+    void setPlaybackMode(bool enabled) override {
+        for (auto& layer : m_layers) layer->setPlaybackMode(enabled);
+    }
+
+    /**
      * @brief Sets the optimizer for the sequential layer and all its sub-layers.
      * @param opt Pointer to the optimizer.
      */

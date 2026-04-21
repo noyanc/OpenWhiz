@@ -15,6 +15,8 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 
 # Add examples
 add_subdirectory(examples/cac40ForecastExample)
+add_subdirectory(examples/cac40ConcatenateForecastExample)
+add_subdirectory(examples/cac40NSForecastExample)
 #add_subdirectory(examples/tryusdForecastExample)
 #add_subdirectory(examples/tryusdConcatenateForecastingExample)
 #add_subdirectory(examples/forecastExample)

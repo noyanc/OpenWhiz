@@ -20,7 +20,7 @@ inline owNeuralNetwork::owNeuralNetwork() {
 
 inline void owNeuralNetwork::setDataset(std::shared_ptr<owDataset> ds) { m_dataset = ds; }
 inline owDataset* owNeuralNetwork::getDataset() { return m_dataset.get(); }
-inline bool owNeuralNetwork::loadData(const std::string& filename) { return m_dataset->loadFromCSV(filename); }
+inline bool owNeuralNetwork::loadData(const std::string& filename, bool hasHeader, bool autoNormalize) { return m_dataset->loadFromCSV(filename, hasHeader, autoNormalize); }
 
 inline void owNeuralNetwork::setRegularization(int type) { m_regType = type; for (auto& layer : m_layers) layer->setRegularization(type); }
 inline void owNeuralNetwork::addLayer(std::shared_ptr<owLayer> layer) {
@@ -29,7 +29,11 @@ inline void owNeuralNetwork::addLayer(std::shared_ptr<owLayer> layer) {
         layer->setOptimizer(m_optimizer.get()); 
         layer->setRegularization(m_regType); 
 
-        // Auto-Chaining: Automatically set input size based on previous layer or dataset
+        /**
+         * AUTO-CHAINING LOGIC:
+         * Automatically determines the input size of the new layer based on the previous layer's output.
+         * If it's the first layer, it uses the dataset's input variable count.
+         */
         if (layer->getInputSize() == 0) {
             size_t prevOutput = 0;
             if (m_layers.empty()) {
@@ -46,12 +50,16 @@ inline void owNeuralNetwork::addLayer(std::shared_ptr<owLayer> layer) {
 
 inline void owNeuralNetwork::getInputMinMax(owTensor<float, 2>& min, owTensor<float, 2>& max) const {
     if (!m_dataset) return;
-    int inputSize = m_dataset->getInputVariableNum();
-    min = owTensor<float, 2>(1, inputSize);
-    max = owTensor<float, 2>(1, inputSize);
+    /**
+     * STATISTICS RETRIEVAL LOGIC:
+     * Maps the neural network's input tensor indices to the dataset's actual column indices.
+     * This ensures that each input feature is normalized using its specific min/max statistics.
+     */
     auto indices = m_dataset->getUsedColumnIndices(false);
+    min = owTensor<float, 2>(1, indices.size());
+    max = owTensor<float, 2>(1, indices.size());
     for (size_t i = 0; i < indices.size(); ++i) {
-        auto params = m_dataset->getNormalizationParams((int)i);
+        auto params = m_dataset->getNormalizationParamsByColumnIndex(indices[i]);
         min(0, i) = params.first;
         max(0, i) = params.second;
     }
@@ -59,13 +67,18 @@ inline void owNeuralNetwork::getInputMinMax(owTensor<float, 2>& min, owTensor<fl
 
 inline void owNeuralNetwork::getTargetMinMax(owTensor<float, 2>& min, owTensor<float, 2>& max) const {
     if (!m_dataset) return;
-    int targetSize = m_dataset->getTargetVariableNum();
-    min = owTensor<float, 2>(1, targetSize);
-    max = owTensor<float, 2>(1, targetSize);
-    for (int i = 0; i < targetSize; ++i) {
-        auto params = m_dataset->getNormalizationParams(m_dataset->getInputVariableNum() + i);
-        min(0, (size_t)i) = params.first;
-        max(0, (size_t)i) = params.second;
+    /**
+     * TARGET STATISTICS RETRIEVAL:
+     * Identifies the min/max values for the target variables to support Inverse Normalization.
+     * Maps global dataset indices to local neural network output indices.
+     */
+    auto indices = m_dataset->getUsedColumnIndices(true);
+    min = owTensor<float, 2>(1, indices.size());
+    max = owTensor<float, 2>(1, indices.size());
+    for (size_t i = 0; i < indices.size(); ++i) {
+        auto params = m_dataset->getNormalizationParamsByColumnIndex(indices[i]);
+        min(0, i) = params.first;
+        max(0, i) = params.second;
     }
 }
 
@@ -489,10 +502,18 @@ inline void owNeuralNetwork::runStandardTrainingLoop() {
     for (int epoch = 1; epoch <= m_maxEpochs; ++epoch) {
         reset(); 
         
-        // Sync target pointers for independent branch learning
+        /**
+         * TARGET SYNCHRONIZATION:
+         * Provides each layer with a reference to the global target tensor.
+         * Essential for Independent Experts (branches) to compute their local losses.
+         */
         for (auto& layer : m_layers) layer->setTarget(&trainTarget);
 
-        // Cache Layer check for playback mode
+        /**
+         * AUTOMATED CACHE MANAGEMENT:
+         * Scans the network hierarchy for active Cache Layers. If a layer is in Playback Mode,
+         * it provides its own (potentially shuffled) targets corresponding to the cached inputs.
+         */
         const owTensor<float, 2>* activeTarget = &trainTarget;
         std::shared_ptr<owCacheLayer> activeCache = nullptr;
         for (auto& layer : m_layers) {
@@ -512,12 +533,13 @@ inline void owNeuralNetwork::runStandardTrainingLoop() {
         float loss = calculateLoss(pred, *activeTarget);
         backward(pred, *activeTarget);
         
-        // Lock caches after the first recording epoch
+        /**
+         * RECURSIVE CACHE LOCKING:
+         * Signals all layers (including those in deep hierarchies like Concatenate branches) 
+         * that the first epoch is complete. CacheLayers will record data and switch to Playback.
+         */
         if (epoch == 1) {
-            for (auto& layer : m_layers) {
-                auto cache = std::dynamic_pointer_cast<owCacheLayer>(layer);
-                if (cache) cache->lockCache();
-            }
+            for (auto& layer : m_layers) layer->lockCache();
         }
         
         // --- INDEPENDENT BRANCH MONITORING ---
@@ -590,6 +612,9 @@ inline void owNeuralNetwork::runStandardTrainingLoop() {
         
         m_actualEpochs = epoch;
     }
+
+    // After training, disable playback mode on all layers so forward/predict uses real input
+    for (auto& layer : m_layers) layer->setPlaybackMode(false);
 }
 
 inline EvaluationReport owNeuralNetwork::evaluatePerformance(const owTensor<float, 2>& input, const owTensor<float, 2>& target, float tolerance) {

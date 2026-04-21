@@ -118,7 +118,7 @@ public:
      * @param filename Path to the CSV file.
      * @return True if loading was successful.
      */
-    bool loadData(const std::string& filename);
+    bool loadData(const std::string& filename, bool hasHeader = true, bool autoNormalize = false);
 
     /**
      * @brief Sets the maximum number of epochs for the training process.
