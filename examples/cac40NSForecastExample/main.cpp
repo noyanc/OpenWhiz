@@ -74,10 +74,10 @@ int main() {
         nn.addLayer(std::make_shared<ow::owInverseNormalizationLayer>());
 
         // --- 3. TRAINING SETTINGS ---
-        nn.setOptimizer(std::make_shared<ow::owADAMOptimizer>(0.0005f));
+        nn.setOptimizer(std::make_shared<ow::owLBFGSOptimizer>(0.0005f));
         nn.setLoss(std::make_shared<ow::owHuberLoss>(1.0f));
-        nn.setMaximumEpochNum(2000);
-        nn.setPrintEpochInterval(100);
+        nn.setMaximumEpochNum(3000);
+        nn.setPrintEpochInterval(5);
 
         std::cout << "Training..." << std::endl;
         nn.train();
@@ -89,8 +89,8 @@ int main() {
 
         // --- 4. EVALUATION ---
         std::cout << "\n--- Last 5 Samples Comparison ---" << std::endl;
-        std::cout << std::setw(15) << "Actual" << std::setw(15) << "Predicted" << std::setw(15) << "Error" << std::endl;
-        std::cout << "-------------------------------------------------------------" << std::endl;
+        std::cout << std::setw(15) << "Actual" << std::setw(15) << "Predicted" << std::setw(15) << "Error" << std::setw(15) << "Type" << std::endl;
+        std::cout << "----------------------------------------------------------------------------" << std::endl;
 
         nn.reset();
         auto fullData = dataset->getData();
@@ -108,10 +108,13 @@ int main() {
             if (i >= rows - 5) {
                 float actual = fullData(i, (size_t)targetColIdx);
                 float predicted = pred(0, 0);
+                std::string sType = dataset->getSampleTypeString(i);
+
                 std::cout << std::fixed << std::setprecision(2) 
                           << std::setw(15) << actual 
                           << std::setw(15) << predicted 
-                          << std::setw(15) << std::abs(actual - predicted) << std::endl;
+                          << std::setw(15) << std::abs(actual - predicted)
+                          << std::setw(15) << sType << std::endl;
             }
         }
     } catch (const std::exception& e) {

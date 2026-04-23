@@ -209,6 +209,20 @@ public:
         
         m_grads.setZero();
 
+#ifdef OW_USE_GPU
+        // 1. Weight Gradients: dW = input^T * dz
+        cuda::matMul(m_lastInput.data(), dz.data(), m_weightGradients.data(), 
+                    (int)m_inputSize, (int)batchSize, (int)m_outputSize, true, false);
+
+        // 2. Bias Gradients: db = sum(dz) over batch
+        cuda::computeBiasGradient(dz.data(), m_biasGradients.data(), (int)batchSize, (int)m_outputSize);
+
+        // 3. Input Gradient: dx = dz * W^T
+        owTensor<float, 2> dx(batchSize, m_inputSize);
+        cuda::matMul(dz.data(), m_weights.data(), dx.data(), 
+                    (int)batchSize, (int)m_outputSize, (int)m_inputSize, false, true);
+        return dx;
+#else
         // 1. Weight Gradients: dW = input^T * dz
         auto inputT = m_lastInput.transpose();
         auto dW = inputT.dot(dz);
@@ -222,6 +236,7 @@ public:
         // 3. Input Gradient: dx = dz * W^T
         auto weightsT = m_weights.transpose();
         return dz.dot(weightsT);
+#endif
     }
 
     /**

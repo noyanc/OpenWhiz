@@ -8,6 +8,7 @@
 
 #pragma once
 #include "../core/owTensor.hpp"
+#include "../core/owCuda.hpp"
 #include <memory>
 #include <string>
 #include <sstream>
@@ -291,11 +292,16 @@ protected:
     float m_regLambda = 0.01f;
 
     void applyRegularization(owTensor<float, 2>& weights, owTensor<float, 2>& gradients) {
-        if (m_regType == NONE) return;
+        if (m_regType == NONE || m_regLambda == 0) return;
+
+    #ifdef OW_USE_GPU
+        cuda::applyRegularization(weights.data(), gradients.data(), (int)weights.size(), static_cast<int>(m_regType), m_regLambda);
+    #else
         for (size_t i = 0; i < weights.size(); ++i) {
             if (m_regType == L2) gradients.data()[i] += m_regLambda * weights.data()[i];
             else if (m_regType == L1) gradients.data()[i] += m_regLambda * (weights.data()[i] > 0 ? 1.0f : -1.0f);
         }
+    #endif
     }
 };
 

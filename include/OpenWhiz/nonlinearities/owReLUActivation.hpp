@@ -9,6 +9,7 @@
 #pragma once
 #include "owActivation.hpp"
 #include "../core/owSimd.hpp"
+#include "../core/owCuda.hpp"
 
 namespace ow {
 
@@ -42,6 +43,9 @@ public:
         float* data = out.data();
         size_t n = out.size();
 
+#ifdef OW_USE_GPU
+        cuda::reluForward(data, (int)n);
+#else
         #ifdef __AVX2__
         __m256 zero = _mm256_setzero_ps();
         for (size_t i = 0; i <= n - 8; i += 8) {
@@ -57,24 +61,19 @@ public:
         #else
         for (size_t i = 0; i < n; ++i) data[i] = std::max(0.0f, data[i]);
         #endif
+#endif
         return out;
     }
 
-    /**
-     * @brief Backward pass: computes the gradient of ReLU.
-     * @param input Original input tensor.
-     * @param outputGradient Incoming gradient from the next layer.
-     * @return Resulting gradient (outputGradient where input > 0, else 0).
-     * 
-     * Uses SIMD bitwise masking to efficiently zero out gradients corresponding 
-     * to inactive neurons.
-     */
     owTensor<float, 2> backward(const owTensor<float, 2>& input, const owTensor<float, 2>& outputGradient) override {
         owTensor<float, 2> grad = outputGradient;
         float* gData = grad.data();
         const float* iData = input.data();
         size_t n = grad.size();
 
+#ifdef OW_USE_GPU
+        cuda::reluBackward(gData, iData, (int)n);
+#else
         #ifdef __AVX2__
         __m256 zero = _mm256_setzero_ps();
         for (size_t i = 0; i <= n - 8; i += 8) {
@@ -92,6 +91,7 @@ public:
         #else
         for (size_t i = 0; i < n; ++i) gData[i] *= (iData[i] > 0 ? 1.0f : 0.0f);
         #endif
+#endif
         return grad;
     }
 

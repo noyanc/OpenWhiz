@@ -487,8 +487,32 @@ inline void owNeuralNetwork::createNeuralNetwork(owProjectType type, const std::
 
 inline void owNeuralNetwork::train() {
     if (!m_dataset || !m_optimizer || !m_loss) return;
-    if (m_optimizer->supportsGlobalOptimization()) m_optimizer->optimizeGlobal(this, m_dataset.get());
-    else runStandardTrainingLoop();
+
+    auto startTime = std::chrono::high_resolution_clock::now();
+
+    if (m_optimizer->supportsGlobalOptimization()) {
+        m_optimizer->optimizeGlobal(this, m_dataset.get());
+    } else {
+        runStandardTrainingLoop();
+    }
+
+    // After training, disable playback mode on all layers so forward/predict uses real input
+    for (auto& layer : m_layers) layer->setPlaybackMode(false);
+
+    auto endTime = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = endTime - startTime;
+    m_actualTrainingTime = elapsed.count();
+
+    if (m_enablePrinting) {
+        std::cout << "\n--- Training Summary ---" << std::endl;
+        std::cout << "Finish Reason: " << m_finishReason << std::endl;
+        std::cout << "Total Time: " << m_actualTrainingTime << "s" << std::endl;
+        std::cout << "Total Epochs: " << m_actualEpochs << std::endl;
+        if (m_actualEpochs > 0) {
+            std::cout << "Avg Time/Epoch: " << (m_actualTrainingTime / m_actualEpochs) << "s" << std::endl;
+        }
+        std::cout << "------------------------\n" << std::endl;
+    }
 }
 
 inline void owNeuralNetwork::runStandardTrainingLoop() {
@@ -629,24 +653,6 @@ inline void owNeuralNetwork::runStandardTrainingLoop() {
             std::chrono::duration<double> currentElapsed = now - startTime;
             printTrainingStatus(epoch, loss, valLoss, currentElapsed.count());
         }
-    }
-
-    // After training, disable playback mode on all layers so forward/predict uses real input
-    for (auto& layer : m_layers) layer->setPlaybackMode(false);
-
-    auto endTime = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = endTime - startTime;
-    m_actualTrainingTime = elapsed.count();
-
-    if (m_enablePrinting) {
-        std::cout << "\n--- Training Summary ---" << std::endl;
-        std::cout << "Finish Reason: " << m_finishReason << std::endl;
-        std::cout << "Total Time: " << m_actualTrainingTime << "s" << std::endl;
-        std::cout << "Total Epochs: " << m_actualEpochs << std::endl;
-        if (m_actualEpochs > 0) {
-            std::cout << "Avg Time/Epoch: " << (m_actualTrainingTime / m_actualEpochs) << "s" << std::endl;
-        }
-        std::cout << "------------------------\n" << std::endl;
     }
 }
 

@@ -8,6 +8,7 @@
 
 #pragma once
 #include "owLoss.hpp"
+#include "../core/owCuda.hpp"
 
 namespace ow {
 
@@ -40,50 +41,51 @@ namespace ow {
  */
 class owMeanSquaredErrorLoss : public owLoss {
 public:
-    /**
-     * @brief Computes the MSE loss value.
-     * @param prediction Predicted output tensor.
-     * @param target Ground truth tensor.
-     * @return The average squared difference.
-     */
+    owMeanSquaredErrorLoss() {
+#ifdef OW_USE_GPU
+        cudaMallocManaged(&m_gpuLoss, sizeof(float));
+#endif
+    }
+
+    ~owMeanSquaredErrorLoss() {
+#ifdef OW_USE_GPU
+        if (m_gpuLoss) cudaFree(m_gpuLoss);
+#endif
+    }
+
     float compute(const owTensor<float, 2>& prediction, const owTensor<float, 2>& target) override {
-        float loss = 0.0f;
         size_t n = prediction.size();
+#ifdef OW_USE_GPU
+        cuda::mseLoss(prediction.data(), target.data(), m_gpuLoss, (int)n);
+        return *m_gpuLoss;
+#else
+        float loss = 0.0f;
         for (size_t i = 0; i < n; ++i) {
             float diff = prediction.data()[i] - target.data()[i];
             loss += diff * diff;
         }
         return loss / static_cast<float>(n);
+#endif
     }
 
-    /**
-     * @brief Computes the gradient of the MSE loss.
-     * 
-     * The derivative with respect to prediction \f$ \hat{y}_i \f$ is:
-     * \f$ \frac{\partial L}{\partial \hat{y}_i} = \frac{2}{n} (\hat{y}_i - y_i) \f$
-     * 
-     * @param prediction Predicted output tensor.
-     * @param target Ground truth tensor.
-     * @return Gradient tensor of the same shape as prediction.
-     */
     owTensor<float, 2> gradient(const owTensor<float, 2>& prediction, const owTensor<float, 2>& target) override {
         owTensor<float, 2> grad(prediction.shape());
         size_t n = prediction.size();
+#ifdef OW_USE_GPU
+        cuda::mseGradient(prediction.data(), target.data(), grad.data(), (int)n);
+#else
         float factor = 2.0f / static_cast<float>(n);
         for (size_t i = 0; i < n; ++i) grad.data()[i] = factor * (prediction.data()[i] - target.data()[i]);
+#endif
         return grad;
     }
 
-    /**
-     * @brief Returns the name of the loss function.
-     */
     std::string getLossName() const override { return "Mean Squared Error Loss"; }
 
-    /**
-     * @brief Creates a deep copy of the MSE loss function.
-     * @return A shared pointer to the cloned object.
-     */
     std::shared_ptr<owLoss> clone() const override { return std::make_shared<owMeanSquaredErrorLoss>(); }
+
+private:
+    float* m_gpuLoss = nullptr;
 };
 
 } // namespace ow

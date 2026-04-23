@@ -9,6 +9,7 @@
 #pragma once
 #include "owActivation.hpp"
 #include "../core/owSimd.hpp"
+#include "../core/owCuda.hpp"
 
 namespace ow {
 
@@ -37,7 +38,12 @@ public:
      */
     owTensor<float, 2> forward(const owTensor<float, 2>& input) override {
         owTensor<float, 2> out = input;
-        for (size_t i = 0; i < out.size(); ++i) out.data()[i] = 1.0f / (1.0f + std::exp(-out.data()[i]));
+        size_t n = out.size();
+#ifdef OW_USE_GPU
+        cuda::sigmoidForward(out.data(), (int)n);
+#else
+        for (size_t i = 0; i < n; ++i) out.data()[i] = 1.0f / (1.0f + std::exp(-out.data()[i]));
+#endif
         return out;
     }
 
@@ -46,8 +52,6 @@ public:
      * @param input Original input tensor.
      * @param outputGradient Incoming gradient from the next layer.
      * @return Resulting gradient for optimization.
-     * 
-     * The derivative is calculated using the sigmoid output to maintain numerical stability.
      */
     owTensor<float, 2> backward(const owTensor<float, 2>& input, const owTensor<float, 2>& outputGradient) override {
         owTensor<float, 2> grad = outputGradient;
@@ -55,6 +59,9 @@ public:
         const float* iData = input.data();
         size_t n = grad.size();
 
+#ifdef OW_USE_GPU
+        cuda::sigmoidBackward(gData, iData, (int)n); 
+#else
         #ifdef __AVX2__
         __m256 v_one = _mm256_set1_ps(1.0f);
         for (size_t i = 0; i <= n - 8; i += 8) {
@@ -87,6 +94,7 @@ public:
             gData[i] *= s * (1.0f - s);
         }
         #endif
+#endif
         return grad;
     }
 

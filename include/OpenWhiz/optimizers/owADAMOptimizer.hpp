@@ -8,6 +8,7 @@
 
 #pragma once
 #include "owOptimizer.hpp"
+#include "../core/owCuda.hpp"
 
 namespace ow {
 
@@ -63,6 +64,10 @@ public:
         auto& v = getBuffer(&params, params.shape(), 1);
         m_t++;
 
+#ifdef OW_USE_GPU
+        cuda::adamUpdate(params.data(), g_clipped.data(), m.data(), v.data(), 
+                        (int)params.size(), m_learningRate, m_beta1, m_beta2, m_epsilon, m_t);
+#else
         float b1t = std::pow(m_beta1, m_t);
         float b2t = std::pow(m_beta2, m_t);
 
@@ -76,6 +81,7 @@ public:
 
             params.data()[i] -= m_learningRate * m_hat / (std::sqrt(v_hat) + m_epsilon);
         }
+#endif
     }
 
     /**

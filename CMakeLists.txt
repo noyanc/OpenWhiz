@@ -11,7 +11,7 @@ if(NOT USE_GPU)
     
     project(OpenWhiz LANGUAGES CXX)
     include_directories(${CMAKE_SOURCE_DIR}/include)
-else()
+elseif(USE_GPU)
     # Define Toolchain Paths
     set(CUDA_PATH "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2")
     set(MSVC_PATH "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64")
@@ -43,7 +43,7 @@ else()
                     "${WIN_SDK_LIB}/um/x64"
                     "${CUDA_PATH}/lib/x64")
     
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --allow-unsupported-compiler")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -O3 --use_fast_math --allow-unsupported-compiler --expt-relaxed-constexpr")
     add_compile_definitions(OW_USE_GPU)
     set(CUDA_PROPAGATE_HOST_FLAGS ON)
 
