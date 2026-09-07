@@ -61,7 +61,13 @@ public:
             for (size_t f = 1; f < input.shape()[1]; ++f) maxVal = std::max(maxVal, input(b, f));
             float sum = 0.0f;
             for (size_t f = 0; f < input.shape()[1]; ++f) { output(b, f) = std::exp(input(b, f) - maxVal); sum += output(b, f); }
-            for (size_t f = 0; f < input.shape()[1]; ++f) output(b, f) /= sum;
+            // Clamp to the same eps as owCategoricalCrossEntropyLoss's prediction
+            // clamp, so a confidently-wrong logit can't underflow past it and
+            // decouple the two gradients toward zero.
+            const float eps = 1e-12f;
+            for (size_t f = 0; f < input.shape()[1]; ++f) {
+                output(b, f) = std::max(eps, std::min(1.0f - eps, output(b, f) / sum));
+            }
         }
         m_lastOutput = output; return output;
     }
