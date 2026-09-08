@@ -478,44 +478,109 @@ public:
      * @param windowSize Number of historical steps to include as features.
      * @param dilation Spacing between sampled historical steps (default 1).
      */
-    void prepareForecastData(int windowSize, int dilation = 1) {
+    /**
+     * @brief Prepares the dataset for time-series forecasting by creating historical lags and future horizons.
+     * 
+     * This method implements a sliding window at the dataset level. For each sample,
+     * it prepends 'windowSize' historical lookback values of the target column as features (lags),
+     * and when 'horizon' > 1, creates multi-step future targets (ahead).
+     * 
+     * @param windowSize Number of historical steps to include as features (lookback).
+     * @param horizon Number of future steps to predict directly (steps ahead, default 1).
+     * @param dilation Spacing between sampled historical steps (default 1).
+     */
+    void prepareForecastData(int windowSize, int horizon = 1, int dilation = 1) {
         if (m_fullData.size() == 0 || windowSize <= 0) return;
+        if (horizon < 1) horizon = 1;
+        if (dilation < 1) dilation = 1;
+
         size_t originalRows = m_fullData.shape()[0];
         size_t originalCols = m_fullData.shape()[1];
         int referenceCol = (int)originalCols - m_targetVariableNum;
+        if (referenceCol < 0 || referenceCol >= (int)originalCols) referenceCol = (int)originalCols - 1;
+
         size_t offset = (size_t)windowSize * (size_t)dilation;
-        if (originalRows <= offset) return;
-        size_t newRows = originalRows - offset;
-        size_t newCols = (size_t)windowSize + originalCols;
+        size_t maxLookahead = (size_t)(horizon - 1) * (size_t)dilation;
+        size_t totalOffset = offset + maxLookahead;
+        if (originalRows <= totalOffset) return;
+
+        size_t newRows = originalRows - totalOffset;
+        size_t newCols = (size_t)windowSize + (originalCols - (size_t)m_targetVariableNum) + (size_t)horizon;
         owTensor<float, 2> newData(newRows, newCols);
         std::vector<SampleType> newSampleTypes(newRows);
+
         for (size_t i = 0; i < newRows; ++i) {
             size_t actualIdx = i + offset;
+
+            // 1. Historical Lag features (lookback: oldest to newest)
             for (int w = 0; w < windowSize; ++w) {
                 size_t lookback = (size_t)(windowSize - w) * (size_t)dilation;
                 newData(i, (size_t)w) = m_fullData(actualIdx - lookback, (size_t)referenceCol);
             }
-            for (size_t j = 0; j < originalCols; ++j) {
-                newData(i, (size_t)windowSize + j) = m_fullData(actualIdx, j);
+
+            // 2. Non-target input features at current time step
+            size_t colCursor = (size_t)windowSize;
+            for (int j = 0; j < referenceCol; ++j) {
+                newData(i, colCursor++) = m_fullData(actualIdx, (size_t)j);
             }
+
+            // 3. Target feature(s) for horizon steps (t+1, t+2, ... t+H)
+            for (int h = 0; h < horizon; ++h) {
+                size_t futureIdx = actualIdx + (size_t)h * (size_t)dilation;
+                newData(i, colCursor + (size_t)h) = m_fullData(futureIdx, (size_t)referenceCol);
+            }
+
             newSampleTypes[i] = m_sampleTypes[actualIdx];
         }
+
         m_fullData = newData;
         m_sampleTypes = newSampleTypes;
+
         std::vector<ColumnInfo> newColumns;
         std::string refName = m_columns[referenceCol].name;
         float refMin = m_columns[referenceCol].min;
         float refMax = m_columns[referenceCol].max;
 
+        // Lag columns: refName_lagW, ..., refName_lag1
         for (int w = 0; w < windowSize; ++w) {
             ColumnInfo lagCol = {refName + "_lag" + std::to_string(windowSize - w), DataType::Numeric, Ordering::Standard, ColumnUsage::USED};
             lagCol.min = refMin;
             lagCol.max = refMax;
             newColumns.push_back(lagCol);
         }
-        for (const auto& col : m_columns) newColumns.push_back(col);
+
+        // Non-target columns
+        for (int j = 0; j < referenceCol; ++j) {
+            newColumns.push_back(m_columns[j]);
+        }
+
+        // Target horizon columns
+        if (horizon == 1) {
+            newColumns.push_back(m_columns[referenceCol]);
+        } else {
+            for (int h = 0; h < horizon; ++h) {
+                ColumnInfo aheadCol = {refName + "_ahead" + std::to_string(h + 1), DataType::Numeric, Ordering::Standard, ColumnUsage::USED};
+                aheadCol.min = refMin;
+                aheadCol.max = refMax;
+                newColumns.push_back(aheadCol);
+            }
+        }
+
         m_columns = newColumns;
+        m_targetVariableNum = horizon;
+        m_forecastWindowSize = windowSize;
+        m_forecastHorizon = horizon;
+        m_forecastDilation = dilation;
     }
+
+    /** @return Lookback window size used in prepareForecastData. */
+    int getForecastWindowSize() const { return m_forecastWindowSize; }
+
+    /** @return Forecast horizon (steps ahead) used in prepareForecastData. */
+    int getForecastHorizon() const { return m_forecastHorizon; }
+
+    /** @return Dilation factor used in prepareForecastData. */
+    int getForecastDilation() const { return m_forecastDilation; }
 
     /**
      * @brief Retrieves the most recent (last) sample's features from the dataset.
@@ -777,6 +842,9 @@ private:
     std::vector<ColumnInfo> m_columns;
     std::vector<SampleType> m_sampleTypes;
     int m_targetVariableNum = 1;
+    int m_forecastWindowSize = 0;
+    int m_forecastHorizon = 1;
+    int m_forecastDilation = 1;
     float m_trainRatio = 0.6f, m_valRatio = 0.2f, m_testRatio = 0.2f;
     char m_delimiter = ';'; 
     bool m_autoNormalizeEnabled = false;

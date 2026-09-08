@@ -645,27 +645,62 @@ inline std::string owNeuralNetwork::predictLabel(const owTensor<float, 2>& input
     return m_dataset->getLabelName(actualColIdx, pred(0, targetVarIdx));
 }
 
-inline owTensor<float, 2> owNeuralNetwork::forecast(int steps) {
+inline owTensor<float, 2> owNeuralNetwork::forecast(int steps, bool unscale) {
     if (!m_dataset) return owTensor<float, 2>(0, 0);
-    return forecast(m_dataset->getLastSample(), steps);
+    return forecast(m_dataset->getLastSample(), steps, unscale);
 }
 
-inline owTensor<float, 2> owNeuralNetwork::forecast(const owTensor<float, 2>& initialSample, int steps) {
-    if (steps <= 0) return owTensor<float, 2>(0, 0);
-    reset(); owTensor<float, 2> currentInput = initialSample;
+inline owTensor<float, 2> owNeuralNetwork::forecast(const owTensor<float, 2>& initialSample, int steps, bool unscale) {
+    if (steps <= 0 || initialSample.shape()[0] == 0 || initialSample.shape()[1] == 0) return owTensor<float, 2>(0, 0);
+    reset();
+    owTensor<float, 2> currentInput = initialSample;
     size_t inputFeatures = currentInput.shape()[1];
-    auto firstPred = forward(currentInput); size_t targetSize = firstPred.shape()[1];
+
+    auto firstPred = forward(currentInput);
+    size_t targetSize = firstPred.shape()[1];
+    if (targetSize == 0) return owTensor<float, 2>(0, 0);
+
+    // Direct Multi-Horizon model: if targetSize > 1 and already contains enough steps
+    if (targetSize >= (size_t)steps && targetSize > 1) {
+        owTensor<float, 2> results(steps, 1);
+        for (int i = 0; i < steps; ++i) {
+            results(i, 0) = firstPred(0, i);
+        }
+        if (unscale && m_dataset && m_dataset->isNormalized()) {
+            m_dataset->inverseNormalize(results);
+        }
+        return results;
+    }
+
+    // Autoregressive Roll-Forward (Recursive multi-step forecast)
     owTensor<float, 2> results(steps, targetSize);
     for (int i = 0; i < steps; ++i) {
         auto pred = forward(currentInput);
-        for (size_t j = 0; j < targetSize; ++j) results(i, j) = pred(0, j);
-        if (targetSize == inputFeatures) currentInput = pred;
-        else if (targetSize < inputFeatures) {
-            size_t offset = inputFeatures - targetSize;
-            for (size_t j = 0; j < targetSize; ++j) currentInput(0, offset + j) = pred(0, j);
-        } else {
-            for (size_t j = 0; j < inputFeatures; ++j) currentInput(0, j) = pred(0, j);
+        for (size_t j = 0; j < targetSize; ++j) {
+            results(i, j) = pred(0, j);
         }
+
+        // Sliding window shift for next horizon step
+        if (targetSize == inputFeatures) {
+            currentInput = pred;
+        } else if (targetSize < inputFeatures) {
+            // Shift history window left by targetSize
+            for (size_t k = 0; k < inputFeatures - targetSize; ++k) {
+                currentInput(0, k) = currentInput(0, k + targetSize);
+            }
+            // Inject newest prediction into the most recent slots
+            for (size_t j = 0; j < targetSize; ++j) {
+                currentInput(0, inputFeatures - targetSize + j) = pred(0, j);
+            }
+        } else {
+            for (size_t j = 0; j < inputFeatures; ++j) {
+                currentInput(0, j) = pred(0, j);
+            }
+        }
+    }
+
+    if (unscale && m_dataset && m_dataset->isNormalized()) {
+        m_dataset->inverseNormalize(results);
     }
     return results;
 }

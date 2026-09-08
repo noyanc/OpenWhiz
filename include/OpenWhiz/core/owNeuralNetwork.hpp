@@ -423,20 +423,26 @@ public:
      * @param steps Number of future steps to predict.
      * @return Tensor containing the sequence of future predictions [steps, TargetSize].
      */
-    owTensor<float, 2> forecast(int steps = 1);
+    /**
+     * @brief Performs recursive multi-step forecasting into the future starting from the last sample.
+     * @param steps Number of future steps (horizon) to predict.
+     * @param unscale Whether to automatically inverse-normalize predictions to real-world units (default true).
+     * @return Tensor of shape [steps, TargetSize] containing the future projection.
+     */
+    owTensor<float, 2> forecast(int steps = 1, bool unscale = true);
 
     /**
-     * @brief Performs recursive multi-step forecasting starting from a specific sample.
+     * @brief Performs recursive multi-step forecasting starting from a specific input state.
      * 
-     * Starting from an initial sample, this method predicts the next step, 
-     * feeds that prediction back as input, and repeats for the specified number of steps.
-     * Useful for long-term time-series projections.
+     * Starting from an initial sample window, this method predicts future steps,
+     * rolling the sliding window forward by shifting history and appending new predictions.
      * 
-     * @param initialSample The starting observation [1, InputFeatures].
-     * @param steps Number of future steps to predict.
-     * @return Tensor containing the sequence of future predictions [steps, TargetSize].
+     * @param initialSample The starting observation window [1, InputFeatures].
+     * @param steps Number of future steps (horizon) to predict.
+     * @param unscale Whether to automatically inverse-normalize predictions to real-world units (default true).
+     * @return Tensor of shape [steps, TargetSize] containing the future projection.
      */
-    owTensor<float, 2> forecast(const owTensor<float, 2>& initialSample, int steps);
+    owTensor<float, 2> forecast(const owTensor<float, 2>& initialSample, int steps, bool unscale = true);
 
     /**
      * @brief Assigns an optimizer to the network.
